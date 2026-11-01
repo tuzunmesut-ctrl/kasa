@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Black Eagle – Uçuş Takip</title>
+<style>
+  :root{--bg:#0f1115;--card:#1a1d24;--txt:#eef0f3;--mut:#9aa1ad;--gold:#c9a24a;--red:#e5484d;--grn:#30a46c;--org:#f59e0b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,Segoe UI,Arial,sans-serif}
+  .w{max-width:720px;margin:0 auto;padding:16px}
+  h1{font-size:22px;margin:4px 0 12px;color:var(--gold)}
+  .card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:12px}
+  label{font-size:13px;color:var(--mut);display:block;margin-bottom:4px}
+  input{width:100%;padding:12px;border-radius:8px;border:1px solid #333a46;background:#0f1115;color:var(--txt);font-size:16px}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .row>*{flex:1;min-width:130px}
+  button{padding:12px 14px;border:0;border-radius:8px;background:var(--gold);color:#111;font-weight:700;font-size:15px;cursor:pointer}
+  button.s{background:#2a2f3a;color:var(--txt);font-weight:600}
+  .f{border-left:5px solid #444;}
+  .f.ok{border-color:var(--grn)} .f.late{border-color:var(--org)} .f.bad{border-color:var(--red)}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .no{font-size:20px;font-weight:800}
+  .st{font-size:13px;padding:3px 8px;border-radius:20px;background:#2a2f3a}
+  .big{font-size:18px;margin:6px 0}
+  .mut{color:var(--mut);font-size:13px}
+  .alarm{animation:bl 1s infinite}
+  @keyframes bl{50%{background:#3a1d20}}
+  #msg{font-size:14px;color:var(--mut);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="w">
+  <h1>🦅 Black Eagle – Uçuş Takip (Viyana)</h1>
+
+  <div class="card" id="keyCard">
+    <label>API.market anahtarı (bir kez yapıştır, bu tarayıcıda saklanır)</label>
+    <div class="row">
+      <input id="key" type="password" placeholder="Anahtarı buraya yapıştır">
+      <button onclick="anahtarKaydet()" style="flex:0">Kaydet</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Uçuş ekle</label>
+    <div class="row">
+      <input id="no" placeholder="Uçuş no (örn. OS456)">
+      <input id="tarih" type="date">
+      <button onclick="ekle()" style="flex:0">Ekle</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="s" onclick="bildirimIzni()">🔔 Bildirimlere izin ver</button>
+      <button class="s" onclick="hepsiniKontrol(true)">🔄 Hepsini şimdi kontrol et</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div id="liste"></div>
+  <p class="mut">Sayfa açık kaldığı sürece otomatik kontrol eder: inişe 6 saatten fazla varsa sorgulamaz, 6–2 saat arası saatte bir, son 2 saatte 15 dakikada bir. İnen / iptal edilen uçuş durdurulur.</p>
+</div>
+
+<script>
+const BASE="https://prod.api.market/api/v1/aedbx/aerodatabox";
+const ESIK=15; // dk
+const LS={get:(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+let ucuslar=LS.get("be_ucuslar",[]);
+let KEY=LS.get("be_key","");
+document.getElementById("tarih").value=new Date().toISOString().slice(0,10);
+if(KEY){document.getElementById("keyCard").querySelector("label").textContent="Anahtar kayıtlı ✔ (değiştirmek için yenisini yapıştır)";}
+
+function msg(t){document.getElementById("msg").textContent=t}
+function kaydet(){LS.set("be_ucuslar",ucuslar);ciz()}
+function anahtarKaydet(){const v=document.getElementById("key").value.trim(); if(!v)return msg("Anahtar boş."); KEY=v; LS.set("be_key",v); document.getElementById("key").value=""; document.getElementById("keyCard").querySelector("label").textContent="Anahtar kayıtlı ✔"; msg("Anahtar kaydedildi.")}
+function ekle(){
+  const no=document.getElementById("no").value.toUpperCase().replace(/\s/g,""); const t=document.getElementById("tarih").value;
+  if(!no||!t)return msg("Uçuş numarası ve tarih gerekli.");
+  if(ucuslar.some(u=>u.no===no&&u.tarih===t))return msg("Bu uçuş zaten listede.");
+  const u={no,tarih:t,durum:"Bekliyor"}; ucuslar.push(u); kaydet(); document.getElementById("no").value=""; sorgula(u);
+}
+function sil(i){ucuslar.splice(i,1);kaydet()}
+function sustur(i){ucuslar[i].alarm=false;kaydet()}
+function tarihOku(s){if(!s)return null;const d=new Date(s.replace(" ","T"));return isNaN(d)?null:d}
+function hhmm(d){return d?d.toLocaleTimeString("de-AT",{hour:"2-digit",minute:"2-digit"}):"–"}
+
+function bildirimIzni(){if("Notification" in window)Notification.requestPermission().then(p=>msg(p==="granted"?"Bildirimler açık.":"Bildirim izni verilmedi."))}
+function uyar(baslik,metin){
+  try{const c=new (window.AudioContext||window.webkitAudioContext)();[0,0.35,0.7].forEach(t=>{const o=c.createOscillator();o.frequency.value=880;o.connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+0.2)})}catch(e){}
+  try{if("Notification" in window&&Notification.permission==="granted")new Notification(baslik,{body:metin})}catch(e){}
+}
+
+async function sorgula(u){
+  if(!KEY){msg("Önce API anahtarını kaydet.");return}
+  u.son=Date.now();
+  try{
+    const r=await fetch(`${BASE}/flights/number/${encodeURIComponent(u.no)}/${u.tarih}?withAircraftImage=false&withLocation=false`,{headers:{"x-api-market-key":KEY}});
+    u.sorgu=(u.sorgu||0)+1;
+    if(r.status===204){u.durum="Bulunamadı";u.hata="Bu tarihte uçuş bulunamadı";u.bitti=true;return kaydet()}
+    if(!r.ok){const t=await r.text();u.hata=`Hata ${r.status}: ${t.slice(0,120)}`;return kaydet()}
+    const liste=await r.json();
+    const f=liste.find(x=>x.arrival?.airport?.icao==="LOWW");
+    if(!f){u.durum="Bulunamadı";u.hata="Viyana'ya gelen uçuş bulunamadı";u.bitti=true;return kaydet()}
+    u.hata=""; u.nereden=f.departure?.airport?.name||f.departure?.airport?.iata||"";
+    u.plan=f.arrival?.scheduledTime?.local||u.plan;
+    const yeni=(f.arrival?.revisedTime||f.arrival?.predictedTime||{}).local||null;
+    u.yeni=yeni; u.durum=f.status||"";
+    const p=tarihOku(u.plan), y=tarihOku(yeni);
+    const fark=(p&&y)?Math.round((y-p)/60000):0; u.fark=fark;
+    if(["Canceled","CanceledUncertain"].includes(u.durum)){u.bitti=true;u.alarm=true;uyar(`❌ İPTAL: ${u.no}`,`${u.nereden} – ${u.tarih}`)}
+    else if(u.durum==="Diverted"){u.bitti=true;u.alarm=true;uyar(`↪️ ${u.no} yönlendirildi`,u.nereden)}
+    else if(Math.abs(fark-(u.bildirilen||0))>=ESIK){u.bildirilen=fark;u.alarm=true;uyar(`${fark>0?"⏰ GECİKME":"⚡ ERKEN"}: ${u.no}`,`Plan ${hhmm(p)} → Yeni ${hhmm(y)} (${fark>0?"+":""}${fark} dk)`)}
+    if(u.durum==="Arrived"){u.bitti=true;uyar(`✅ ${u.no} indi`,hhmm(y||p))}
+  }catch(e){u.hata="Bağlantı hatası: "+e.message}
+  kaydet();
+}
+
+function aralikDk(u){
+  const p=tarihOku(u.plan); if(!p)return 60;
+  const kalan=(p-Date.now())/60000;
+  if(kalan>360)return null; if(kalan>120)return 60; return 15;
+}
+async function hepsiniKontrol(zorla){
+  for(const u of ucuslar){
+    if(u.bitti&&!zorla)continue;
+    if(!zorla){const a=aralikDk(u); if(a===null)continue; if(u.son&&(Date.now()-u.son)/60000<a)continue;}
+    if(zorla&&u.bitti)continue;
+    await sorgula(u);
+  }
+  if(zorla)msg("Kontrol edildi: "+new Date().toLocaleTimeString("de-AT"));
+}
+
+function ciz(){
+  const el=document.getElementById("liste");
+  if(!ucuslar.length){el.innerHTML='<div class="card mut">Henüz uçuş yok.</div>';return}
+  el.innerHTML=ucuslar.map((u,i)=>{
+    const p=tarihOku(u.plan), y=tarihOku(u.yeni);
+    const iptal=["Canceled","CanceledUncertain","Diverted","Bulunamadı"].includes(u.durum);
+    const cls=iptal?"bad":(Math.abs(u.fark||0)>=ESIK?"late":(u.plan?"ok":""));
+    const farkTxt=u.fark?` <b style="color:${u.fark>0?'var(--org)':'var(--grn)'}">(${u.fark>0?"+":""}${u.fark} dk)</b>`:"";
+    return `<div class="card f ${cls} ${u.alarm?'alarm':''}">
+      <div class="top"><span class="no">${u.no}</span><span class="st">${u.durum||""}</span></div>
+      <div class="mut">${u.tarih}${u.nereden?" · "+u.nereden+" → Viyana":""}</div>
+      <div class="big">Plan: <b>${hhmm(p)}</b> &nbsp; Yeni: <b>${hhmm(y||p)}</b>${farkTxt}</div>
+      ${u.hata?`<div style="color:var(--red);font-size:13px">${u.hata}</div>`:""}
+      <div class="mut">Son kontrol: ${u.son?new Date(u.son).toLocaleTimeString("de-AT",{hour:"2-digit",minute:"2-digit"}):"–"} · Sorgu: ${u.sorgu||0}</div>
+      <div class="row" style="margin-top:8px">
+        ${u.alarm?`<button onclick="sustur(${i})">Gördüm</button>`:""}
+        <button class="s" onclick="sorgula(ucuslar[${i}])">🔄 Kontrol</button>
+        <button class="s" onclick="sil(${i})">🗑 Sil</button>
+      </div></div>`}).join("");
+}
+ciz();
+setInterval(()=>hepsiniKontrol(false),60000);
+setTimeout(()=>hepsiniKontrol(false),2000);
+</script>
+</body>
+</html>
